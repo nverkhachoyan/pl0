@@ -64,33 +64,6 @@ void token_free(Token *tok) {
   free(tok);
 }
 
-int which_keyword(char *str) {
-  if (strcmp(str, "const") == 0)
-    return TOKEN_CONST;
-  if (strcmp(str, "var") == 0)
-    return TOKEN_VAR;
-  if (strcmp(str, "procedure") == 0)
-    return TOKEN_PROCEDURE;
-  if (strcmp(str, "call") == 0)
-    return TOKEN_CALL;
-  if (strcmp(str, "begin") == 0)
-    return TOKEN_BEGIN;
-  if (strcmp(str, "end") == 0)
-    return TOKEN_END;
-  if (strcmp(str, "if") == 0)
-    return TOKEN_IF;
-  if (strcmp(str, "then") == 0)
-    return TOKEN_THEN;
-  if (strcmp(str, "while") == 0)
-    return TOKEN_WHILE;
-  if (strcmp(str, "do") == 0)
-    return TOKEN_DO;
-  if (strcmp(str, "odd") == 0)
-    return TOKEN_ODD;
-
-  return -1;
-}
-
 Token *lexer_token_copy(Token *tok) {
   if (!tok) {
     return NULL;

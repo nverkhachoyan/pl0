@@ -3,6 +3,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int buffer_grow(LexerBuffer *buf) {
+  if (!buf)
+    return -1;
+
+  buf->cap *= 2;
+  char *new_data = realloc(buf->data, buf->cap);
+  if (!new_data) {
+    return -1;
+  }
+
+  buf->data = new_data;
+  return 0;
+}
+
 LexerBuffer *buffer_alloc(size_t cap) {
   LexerBuffer *buf = malloc(sizeof(LexerBuffer));
   if (!buf)
@@ -62,18 +76,4 @@ char *buffer_to_str(const LexerBuffer *buf) {
   str[buf->len] = '\0';
 
   return str;
-}
-
-static int buffer_grow(LexerBuffer *buf) {
-  if (!buf)
-    return -1;
-
-  buf->cap *= 2;
-  char *new_data = realloc(buf->data, buf->cap);
-  if (!new_data) {
-    return -1;
-  }
-
-  buf->data = new_data;
-  return 0;
 }

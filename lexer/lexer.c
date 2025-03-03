@@ -4,9 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "error.h"
 #include "lexer_buffer.h"
 #include "span.h"
 #include "token.h"
+
+#define MAX_LEXER_ERRORS 100
+
+static int grow_tok_stream(Lexer *);
+static void reset_tok_stream(Lexer *);
+static void lexer_add_error(Lexer *, LexerErrorCode, const char *,
+                            const Span *);
 
 struct Lexer {
   char *input;
@@ -16,6 +24,8 @@ struct Lexer {
   int pos;
   LexerBuffer *buf;
   Span span;
+  LexerError errors[MAX_LEXER_ERRORS];
+  size_t error_count;
 };
 
 static void advance(Lexer *lexer) {
@@ -46,7 +56,8 @@ static Token *read_ident(Lexer *lexer) {
 
   while (isalpha(lexer->ch) || isdigit(lexer->ch)) {
     if (buffer_append(lexer->buf, lexer->ch) != 0) {
-      perror("failed to append while reading read_ident\n");
+      lexer_add_error(lexer, LEXER_ERROR_INVALID_CHAR,
+                      "Failed to append character to identifier", &lexer->span);
       return NULL;
     }
     advance(lexer);
@@ -82,13 +93,21 @@ static Token *read_number(Lexer *lexer) {
 
   while (isdigit(lexer->ch)) {
     if (buffer_append(lexer->buf, lexer->ch) != 0) {
-      perror("failed to append token char to buffer\n");
+      lexer_add_error(lexer, LEXER_ERROR_BUFFER_OVERFLOW,
+                      "failed to append digit to buffer", &lexer->span);
       return NULL;
     }
     advance(lexer);
   }
 
   span_mark_end(&lexer->span);
+
+  if (isalpha(lexer->ch)) {
+    lexer_add_error(lexer, LEXER_ERROR_INVALID_NUMBER,
+                    "Encountered an alpha char in number literal",
+                    &lexer->span);
+    return NULL;
+  }
 
   char *str = buffer_to_str(lexer->buf);
   if (!str) {
@@ -106,6 +125,20 @@ static Token *read_number(Lexer *lexer) {
   return tok;
 }
 
+static void lexer_add_error(Lexer *lexer, LexerErrorCode code,
+                            const char *message, const Span *span) {
+  if (!lexer || !message || !span || lexer->error_count >= MAX_LEXER_ERRORS)
+    return;
+
+  LexerError *error = &lexer->errors[lexer->error_count++];
+  error->code = code;
+  strncpy(error->message, message, sizeof(error->message) - 1);
+  error->message[sizeof(error->message) - 1] = '\0';
+  error->span = *span;
+}
+
+static void lexer_clear_errors(Lexer *lexer) { lexer->error_count = 0; }
+
 static int _next_token(Lexer *lexer, Token **token_out) {
   if (lexer->ch == '\0')
     return 1;
@@ -114,6 +147,12 @@ static int _next_token(Lexer *lexer, Token **token_out) {
     return 1;
 
   span_mark_start(&lexer->span);
+
+  if (!isprint(lexer->ch)) {
+    lexer_add_error(lexer, LEXER_ERROR_INVALID_CHAR,
+                    "Invalid non-printable character", &lexer->span);
+    return 2;
+  }
 
   if (lexer->ch == ':' && peek(lexer) == '=') {
     advance(lexer);
@@ -191,27 +230,34 @@ static int _next_token(Lexer *lexer, Token **token_out) {
       if (isdigit(lexer->ch)) {
         Token *tok = read_number(lexer);
         if (!tok) {
-          perror("failed to read number token\n");
-          return -1;
+          lexer_add_error(lexer, LEXER_ERROR_UNTERMINATED_NUMBER,
+                          "Failed to read number literal", &lexer->span);
+          return 2;
         }
         *token_out = tok;
       } else if (isalpha(lexer->ch)) {
         Token *tok = read_ident(lexer);
         if (!tok) {
+          lexer_add_error(lexer, LEXER_ERROR_INVALID_IDENTIFIER,
+                          "Failed to read identifier/keyword", &lexer->span);
           return 2;
         }
         *token_out = tok;
-        advance(lexer);
       } else {
+        char error_msg[100];
         if (lexer->ch == '\0') {
-          fprintf(stderr, "Error: Unexpected end of file at %s:%d:%d\n",
-                  lexer->span.filename, lexer->span.line, lexer->span.col);
-        } else {
-          fprintf(stderr,
-                  "Error: Unexpected character '%c' (ASCII: %d) at %s:%d:%d\n",
-                  lexer->ch, (int)lexer->ch, lexer->span.filename,
-                  lexer->span.line, lexer->span.col);
+          snprintf(error_msg, sizeof(error_msg),
+                   "Error: Unexpected end of file at %s:%d:%d\n",
+                   lexer->span.filename, lexer->span.line, lexer->span.col);
+          lexer_add_error(lexer, LEXER_ERROR_UNEXPECTED_EOF, error_msg,
+                          &lexer->span);
+          return 2;
         }
+        snprintf(error_msg, sizeof(error_msg),
+                 "Unexpected character '%c' (ASCII: %d)", lexer->ch,
+                 (int)lexer->ch);
+        lexer_add_error(lexer, LEXER_ERROR_INVALID_CHAR, error_msg,
+                        &lexer->span);
         advance(lexer);
         return 2;
       }
@@ -225,6 +271,8 @@ static int _next_token(Lexer *lexer, Token **token_out) {
 
   return -1;
 }
+
+// ***** PUBLIC API Functions *****
 
 int lexer_next_token(Lexer *lexer, Token **token_out) {
   if (!lexer || !token_out)
@@ -271,7 +319,8 @@ Lexer *lexer_create(const char *filename) {
   LexerBuffer *buf = buffer_alloc(32);
 
   if (!buf) {
-    perror("Error allocating memory for lexer buffer");
+    lexer_add_error(lexer, LEXER_ERROR_MEMORY_ALLOCATION,
+                    "Failed to allocate lexer buffer", &lexer->span);
     free(lexer);
     return NULL;
   }
@@ -279,7 +328,8 @@ Lexer *lexer_create(const char *filename) {
 
   FILE *fptr = fopen(filename, "rb");
   if (!fptr) {
-    perror("Error opening file");
+    lexer_add_error(lexer, LEXER_ERROR_FILE_READ, "Failed to open source file",
+                    &lexer->span);
     buffer_free(lexer->buf);
     free(lexer);
     return NULL;
@@ -291,7 +341,8 @@ Lexer *lexer_create(const char *filename) {
 
   lexer->input = (char *)malloc(lexer->file_size + 1);
   if (lexer->input == NULL) {
-    perror("Error allocating memory for input");
+    lexer_add_error(lexer, LEXER_ERROR_MEMORY_ALLOCATION,
+                    "Failed to allocate input file buffer", &lexer->span);
     fclose(fptr);
     buffer_free(lexer->buf);
     free(lexer);
@@ -300,7 +351,8 @@ Lexer *lexer_create(const char *filename) {
 
   size_t bytes_read = fread(lexer->input, 1, lexer->file_size, fptr);
   if (bytes_read != (size_t)lexer->file_size) {
-    perror("Error reading file");
+    lexer_add_error(lexer, LEXER_ERROR_FILE_READ, "Failed to read from file",
+                    &lexer->span);
     free(lexer->input);
     buffer_free(lexer->buf);
     fclose(fptr);
@@ -315,10 +367,8 @@ Lexer *lexer_create(const char *filename) {
 }
 
 void lexer_free(Lexer *lexer) {
-  if (lexer == NULL) {
-    perror("Cannot free a NULL pointer");
+  if (!lexer)
     return;
-  }
 
   free(lexer->input);
   buffer_free(lexer->buf);
@@ -326,3 +376,10 @@ void lexer_free(Lexer *lexer) {
 }
 
 int lexer_num_tokens(Lexer *lexer) { return lexer->num_tokens; }
+
+const LexerError *lexer_get_errors(const Lexer *lexer, size_t *count) {
+  if (count) {
+    *count = lexer->error_count;
+  }
+  return lexer->errors;
+}

@@ -44,7 +44,6 @@ typedef struct {
 
 Token *token_create(TokenType token_type, const char *str_rep, const Span *);
 void token_free(Token *tok);
-int which_keyword(char *str);
 TokenType keyword_get_type(const char *str);
 
 #endif

@@ -4,7 +4,7 @@ procedure fact;
     var n, f;
     begin
         n := max;
-        f := 1;
+        f := 1a;
         while n > 0 do
         begin
             f := f * n;

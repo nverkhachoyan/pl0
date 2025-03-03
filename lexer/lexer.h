@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "error.h"
 #include "span.h"
 #include "token.h"
 
@@ -15,8 +16,6 @@ Lexer *lexer_create(const char *);
 void lexer_free(Lexer *);
 int lexer_next_token(Lexer *, Token **);
 int lexer_num_tokens(Lexer *);
-
-static int grow_tok_stream(Lexer *);
-static void reset_tok_stream(Lexer *);
+const LexerError *lexer_get_errors(const Lexer *, size_t *);
 
 #endif

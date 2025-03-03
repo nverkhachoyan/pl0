@@ -1,3 +1,4 @@
+#include "lexer/error.h"
 #include "lexer/lexer.h"
 #include "lexer/token.h"
 #include <errno.h>
@@ -24,6 +25,17 @@ int main() {
     printf("%s ", tok->str_rep);
     token_free(tok);
     tok = NULL;
+  }
+
+  size_t lexer_err_count = 0;
+  const LexerError *lexer_errors = lexer_get_errors(lexer, &lexer_err_count);
+  if (lexer_err_count > 0) {
+    printf("\n");
+    for (size_t i = 0; i < lexer_err_count; i++) {
+      char msg[255];
+      lexer_format_error(&lexer_errors[i], msg, 255);
+      printf("Lexer Error: %s\n", msg);
+    }
   }
 
   if (tok) {
