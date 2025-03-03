@@ -1,8 +1,8 @@
 # Interpreter for PL/0 written in C
 
 * [x] Lexer (needs better error handling).
-* [] Parser.
-* [] Interpreter.
+* [_] Parser.
+* [_] Interpreter.
 
 The concrete grammar of the language.
 

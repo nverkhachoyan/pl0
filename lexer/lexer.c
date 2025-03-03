@@ -1,19 +1,27 @@
 #include "lexer.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "lexer_buffer.h"
+#include "span.h"
+#include "token.h"
+
 struct Lexer {
+  char *input;
+  long file_size;
+  int num_tokens;
   char ch;
   int pos;
-  char tok_stream[1024];
-  int stream_size;
-  long file_size;
-  char *input;
-  int num_tokens;
+  LexerBuffer *buf;
+  Span span;
 };
 
-static void advance(Lexer *lexer) { lexer->ch = lexer->input[lexer->pos++]; }
+static void advance(Lexer *lexer) {
+  lexer->ch = lexer->input[lexer->pos++];
+  span_advance(&lexer->span, lexer->ch);
+}
 
 static char peek(Lexer *lexer) {
   if (lexer->pos >= lexer->file_size)
@@ -21,209 +29,189 @@ static char peek(Lexer *lexer) {
   return lexer->input[lexer->pos];
 }
 
-static void skip_whitespace_and_comments(Lexer *lexer) {
+static void skip_whitespace(Lexer *lexer) {
   while (isspace(lexer->ch)) {
     advance(lexer);
+    span_advance(&lexer->span, lexer->ch);
   }
 }
 
-static Token *consume_ident(Lexer *lexer) {
-  char *str = malloc(lexer->stream_size + 1);
-  if (!str)
+static Token *read_ident(Lexer *lexer) {
+  if (!lexer || !lexer->buf) {
     return NULL;
+  }
 
-  memcpy(str, lexer->tok_stream, lexer->stream_size);
-  str[lexer->stream_size] = '\0';
+  span_mark_start(&lexer->span);
+  buffer_reset(lexer->buf);
 
-  Token *tok = calloc(1, sizeof(Token));
+  while (isalpha(lexer->ch) || isdigit(lexer->ch)) {
+    if (buffer_append(lexer->buf, lexer->ch) != 0) {
+      perror("failed to append while reading read_ident\n");
+      return NULL;
+    }
+    advance(lexer);
+  }
+
+  span_mark_end(&lexer->span);
+
+  char *str = buffer_to_str(lexer->buf);
+  if (!str) {
+    perror("failed to convert buff stream to string\n");
+    return NULL;
+  }
+
+  TokenType keyword_type = keyword_get_type(str);
+  Token *tok = token_create(keyword_type, str, &lexer->span);
   if (!tok) {
+    perror("failed to craete token\n");
     free(str);
     return NULL;
   }
 
-  tok->token_type = TOKEN_IDENT;
-  tok->str_rep = str;
-
-  memset(lexer->tok_stream, 0, sizeof(lexer->tok_stream));
-  lexer->stream_size = 0;
-
+  free(str);
   return tok;
 }
 
-static int which_keyword(char *str) {
-  if (strcmp(str, "const") == 0)
-    return TOKEN_CONST;
-  if (strcmp(str, "var") == 0)
-    return TOKEN_VAR;
-  if (strcmp(str, "procedure") == 0)
-    return TOKEN_PROCEDURE;
-  if (strcmp(str, "call") == 0)
-    return TOKEN_CALL;
-  if (strcmp(str, "begin") == 0)
-    return TOKEN_BEGIN;
-  if (strcmp(str, "end") == 0)
-    return TOKEN_END;
-  if (strcmp(str, "if") == 0)
-    return TOKEN_IF;
-  if (strcmp(str, "then") == 0)
-    return TOKEN_THEN;
-  if (strcmp(str, "while") == 0)
-    return TOKEN_WHILE;
-  if (strcmp(str, "do") == 0)
-    return TOKEN_DO;
-  if (strcmp(str, "odd") == 0)
-    return TOKEN_ODD;
-
-  return -1;
-}
-
-static Token *consume_keyword(Lexer *lexer) {
-  char *str = malloc((lexer->stream_size + 1) * sizeof(char));
-  if (str == NULL) {
-    perror("Failed to allocate memory for str_rep for keyword");
+static Token *read_number(Lexer *lexer) {
+  if (!lexer || !lexer->buf) {
     return NULL;
   }
 
-  memcpy(str, lexer->tok_stream, lexer->stream_size);
-  str[lexer->stream_size] = '\0';
-  int which = which_keyword(str);
-  Token *tok = calloc(1, sizeof(Token));
+  span_mark_start(&lexer->span);
+  buffer_reset(lexer->buf);
+
+  while (isdigit(lexer->ch)) {
+    if (buffer_append(lexer->buf, lexer->ch) != 0) {
+      perror("failed to append token char to buffer\n");
+      return NULL;
+    }
+    advance(lexer);
+  }
+
+  span_mark_end(&lexer->span);
+
+  char *str = buffer_to_str(lexer->buf);
+  if (!str) {
+    perror("failed to convert buff stream to string\n");
+    return NULL;
+  }
+
+  Token *tok = token_create(TOKEN_NUMBER, str, &lexer->span);
   if (!tok) {
-    perror("Failed to allocate memory for token");
+    perror("failed to create token\n");
     free(str);
     return NULL;
   }
 
-  tok->token_type = which;
-  tok->str_rep = str;
-
-  memset(lexer->tok_stream, 0, sizeof(lexer->tok_stream));
-  lexer->stream_size = 0;
-
-  return tok;
-}
-
-static Token *create_token(int token_type, const char *str_rep) {
-  Token *tok = calloc(1, sizeof(Token));
-  if (!tok)
-    return NULL;
-
-  tok->token_type = token_type;
-  tok->str_rep = strdup(str_rep);
-  if (!tok->str_rep) {
-    free(tok);
-    return NULL;
-  }
   return tok;
 }
 
 static int _next_token(Lexer *lexer, Token **token_out) {
   if (lexer->ch == '\0')
     return 1;
+  skip_whitespace(lexer);
+  if (lexer->ch == '\0')
+    return 1;
 
-  skip_whitespace_and_comments(lexer);
+  span_mark_start(&lexer->span);
 
   if (lexer->ch == ':' && peek(lexer) == '=') {
     advance(lexer);
     advance(lexer);
-    *token_out = create_token(TOKEN_ASSIGN, ":=");
+    span_mark_end(&lexer->span);
+    *token_out = token_create(TOKEN_ASSIGN, ":=", &lexer->span);
   } else if (lexer->ch == '<' && peek(lexer) == '=') {
     advance(lexer);
     advance(lexer);
-    *token_out = create_token(TOKEN_LTE, "<=");
+    span_mark_end(&lexer->span);
+    *token_out = token_create(TOKEN_LTE, "<=", &lexer->span);
   } else if (lexer->ch == '>' && peek(lexer) == '=') {
     advance(lexer);
     advance(lexer);
-    *token_out = create_token(TOKEN_GTE, ">=");
+    span_mark_end(&lexer->span);
+    *token_out = token_create(TOKEN_GTE, ">=", &lexer->span);
   } else {
     switch (lexer->ch) {
     case ';':
-      *token_out = create_token(TOKEN_SEMICOLON, ";");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_SEMICOLON, ";", &lexer->span);
       break;
     case '-':
-      *token_out = create_token(TOKEN_MINUS, "-");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_MINUS, "-", &lexer->span);
       break;
     case '+':
-      *token_out = create_token(TOKEN_PLUS, "+");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_PLUS, "+", &lexer->span);
       break;
     case '=':
-      *token_out = create_token(TOKEN_EQUAL, "=");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_EQUAL, "=", &lexer->span);
       break;
     case ',':
-      *token_out = create_token(TOKEN_COMMA, ",");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_COMMA, ",", &lexer->span);
       break;
     case '.':
-      *token_out = create_token(TOKEN_PERIOD, ".");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_PERIOD, ".", &lexer->span);
       break;
     case '*':
-      *token_out = create_token(TOKEN_TIMES, "*");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_TIMES, "*", &lexer->span);
       break;
     case '/':
-      *token_out = create_token(TOKEN_DIVIDE, "/");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_DIVIDE, "/", &lexer->span);
       break;
     case '#':
-      *token_out = create_token(TOKEN_NOT_EQUAL, "#");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_NOT_EQUAL, "#", &lexer->span);
       break;
     case '<':
-      *token_out = create_token(TOKEN_LT, "<");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_LT, "<", &lexer->span);
       break;
     case '>':
-      *token_out = create_token(TOKEN_GT, ">");
       advance(lexer);
+      span_mark_end(&lexer->span);
+      *token_out = token_create(TOKEN_GT, ">", &lexer->span);
       break;
     default:
       if (isdigit(lexer->ch)) {
-        char number[256] = {0};
-        int i = 0;
-
-        while (isdigit(lexer->ch) && i < 255) {
-          number[i++] = lexer->ch;
-          advance(lexer);
+        Token *tok = read_number(lexer);
+        if (!tok) {
+          perror("failed to read number token\n");
+          return -1;
         }
-
-        number[i] = '\0';
-
-        *token_out = create_token(TOKEN_NUMBER, number);
-        if (*token_out) {
-          (*token_out)->value = atoi(number);
-        }
-
+        *token_out = tok;
       } else if (isalpha(lexer->ch)) {
-        lexer->stream_size = 0;
-
-        while ((isalpha(lexer->ch) || isdigit(lexer->ch)) &&
-               lexer->stream_size < sizeof(lexer->tok_stream) - 1) {
-          lexer->tok_stream[lexer->stream_size++] = lexer->ch;
-          advance(lexer);
-        }
-
-        if (lexer->stream_size > 0) {
-          char temp[1024];
-          memcpy(temp, lexer->tok_stream, lexer->stream_size);
-          temp[lexer->stream_size] = '\0';
-
-          if (which_keyword(temp) != -1) {
-            *token_out = consume_keyword(lexer);
-            return 0;
-          } else {
-            *token_out = consume_ident(lexer);
-            return 0;
-          }
-        } else {
-          advance(lexer);
+        Token *tok = read_ident(lexer);
+        if (!tok) {
           return 2;
         }
+        *token_out = tok;
+        advance(lexer);
       } else {
+        if (lexer->ch == '\0') {
+          fprintf(stderr, "Error: Unexpected end of file at %s:%d:%d\n",
+                  lexer->span.filename, lexer->span.line, lexer->span.col);
+        } else {
+          fprintf(stderr,
+                  "Error: Unexpected character '%c' (ASCII: %d) at %s:%d:%d\n",
+                  lexer->ch, (int)lexer->ch, lexer->span.filename,
+                  lexer->span.line, lexer->span.col);
+        }
         advance(lexer);
         return 2;
       }
@@ -243,22 +231,28 @@ int lexer_next_token(Lexer *lexer, Token **token_out) {
     return -1;
 
   *token_out = NULL;
-
+  Token *temp_token = NULL;
   int result;
+
   do {
-    result = _next_token(lexer, token_out);
+    result = _next_token(lexer, &temp_token);
 
-    if (result < 0 || result == 1)
+    if (result < 0) {
+      token_free(temp_token);
       return result;
-
-    if (result == 0)
-      return 0;
-
-    if (*token_out) {
-      lexer_token_free(*token_out);
-      *token_out = NULL;
     }
 
+    if (result == 1) {
+      return result;
+    }
+
+    if (result == 0) {
+      *token_out = temp_token;
+      return 0;
+    }
+
+    token_free(temp_token);
+    temp_token = NULL;
   } while (result == 2);
 
   return result;
@@ -272,10 +266,21 @@ Lexer *lexer_create(const char *filename) {
     perror("Error allocating memory for lexer");
     return NULL;
   }
+  span_init(&lexer->span, filename);
+
+  LexerBuffer *buf = buffer_alloc(32);
+
+  if (!buf) {
+    perror("Error allocating memory for lexer buffer");
+    free(lexer);
+    return NULL;
+  }
+  lexer->buf = buf;
 
   FILE *fptr = fopen(filename, "rb");
   if (!fptr) {
     perror("Error opening file");
+    buffer_free(lexer->buf);
     free(lexer);
     return NULL;
   }
@@ -288,6 +293,7 @@ Lexer *lexer_create(const char *filename) {
   if (lexer->input == NULL) {
     perror("Error allocating memory for input");
     fclose(fptr);
+    buffer_free(lexer->buf);
     free(lexer);
     return NULL;
   }
@@ -296,6 +302,7 @@ Lexer *lexer_create(const char *filename) {
   if (bytes_read != (size_t)lexer->file_size) {
     perror("Error reading file");
     free(lexer->input);
+    buffer_free(lexer->buf);
     fclose(fptr);
     free(lexer);
     return NULL;
@@ -314,39 +321,8 @@ void lexer_free(Lexer *lexer) {
   }
 
   free(lexer->input);
+  buffer_free(lexer->buf);
   free(lexer);
-}
-
-Token *lexer_token_copy(Token *tok) {
-  if (!tok) {
-    perror("Cannot copy from a NULL pointer");
-    return NULL;
-  }
-  Token *copy = malloc(sizeof(Token));
-  if (!copy) {
-    perror("Error allocating memory for token copy");
-    return NULL;
-  }
-  copy->token_type = tok->token_type;
-  copy->value = tok->value;
-  copy->str_rep = strdup(tok->str_rep);
-  if (!copy->str_rep) {
-    free(copy);
-    return NULL;
-  }
-  return copy;
-}
-
-void lexer_token_free(Token *tok) {
-  if (!tok) {
-    perror("Cannot free a NULL pointer");
-    return;
-  }
-
-  if (tok->str_rep) {
-    free(tok->str_rep);
-  }
-  free(tok);
 }
 
 int lexer_num_tokens(Lexer *lexer) { return lexer->num_tokens; }
